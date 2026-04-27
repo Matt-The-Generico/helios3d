@@ -1,0 +1,28 @@
+{
+  "entities": [
+    {
+      "id": 1,
+      "name": "CameraTarget",
+      "primitive": "Empty",
+      "enabled": true,
+      "hidden": false,
+      "locked": false,
+      "tag": "Editor",
+      "layer": 0,
+      "parent": null,
+      "transform": {
+        "position": [0.0, 0.0, 0.0],
+        "rotation": [0.0, 0.0, 0.0],
+        "scale": [1.0, 1.0, 1.0]
+      },
+      "material": {
+        "color": [1.0, 1.0, 1.0, 1.0],
+        "roughness": 0.5,
+        "metallic": 0.0,
+        "tiling": [1.0, 1.0],
+        "offset": [0.0, 0.0],
+        "texturePath": ""
+      }
+    }
+  ]
+}

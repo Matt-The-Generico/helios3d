@@ -1,0 +1,8 @@
+{
+  "save_scene": "Ctrl+S",
+  "undo": "Ctrl+Z",
+  "redo": "Ctrl+Y",
+  "duplicate": "Ctrl+D",
+  "focus_selected": "F",
+  "hide_unhide": "H"
+}
