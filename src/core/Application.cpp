@@ -1,14 +1,15 @@
+#include <glad/glad.h>
+
 #include "core/Application.h"
 
 #include "core/Log.h"
 #include "core/Time.h"
-
-#include <glad/glad.h>
 #include <imgui.h>
 #include <backends/imgui_impl_glfw.h>
 #include <backends/imgui_impl_opengl3.h>
 
 #include <GLFW/glfw3.h>
+#include <ImGuizmo.h>
 
 namespace helios::core {
 bool Application::Init() {
@@ -47,6 +48,7 @@ void Application::Run() {
     ImGui_ImplOpenGL3_NewFrame();
     ImGui_ImplGlfw_NewFrame();
     ImGui::NewFrame();
+    ImGuizmo::BeginFrame();
 
     m_Editor.Update(Time::DeltaTime());
     m_Editor.Render();

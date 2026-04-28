@@ -1,5 +1,6 @@
 #include "editor/EditorLayer.h"
 
+#include "editor/Picking.h"
 #include "core/Log.h"
 #include "core/Time.h"
 #include "scene/SceneSerializer.h"
@@ -9,15 +10,19 @@
 #include <imgui_internal.h>
 #include <ImGuizmo.h>
 
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
+
+#include <cstring>
 #include <filesystem>
+#include <unordered_set>
 #include <sstream>
+#include <cmath>
 #include <cstdio>
 #include <cstdint>
 
 namespace helios::editor {
 namespace {
-const char* PrimitiveNames[] = {"Cube", "Sphere", "Plane", "Cylinder", "Cone", "Torus", "Empty"};
-
 std::filesystem::path ResolveAssetsRoot() {
   const std::filesystem::path local("assets");
   if (std::filesystem::exists(local)) return local;
@@ -27,9 +32,26 @@ std::filesystem::path ResolveAssetsRoot() {
   if (std::filesystem::exists(twoUp)) return twoUp;
   return local;
 }
+
+glm::vec3 SelectionCentroid(const scene::Scene& scene, const std::unordered_set<scene::EntityId>& sel) {
+  glm::vec3 c(0.0f);
+  int n = 0;
+  for (const auto id : sel) {
+    const auto* e = scene.Find(id);
+    if (e) {
+      c += e->transform.position;
+      ++n;
+    }
+  }
+  return n > 0 ? c / static_cast<float>(n) : glm::vec3(0.0f);
 }
+} // namespace
+
+void EditorLayer::SyncCameraFromSettings() { m_Camera.SetInputConfig(m_Settings.camera); }
 
 void EditorLayer::Init() {
+  m_GizmoOperation = static_cast<int>(ImGuizmo::TRANSLATE);
+  SyncCameraFromSettings();
   m_Renderer.Init();
   EnsureBootstrapScene();
   if (std::filesystem::exists("assets/scenes/recovery.json")) {
@@ -54,6 +76,10 @@ void EditorLayer::EnsureBootstrapScene() {
 }
 
 void EditorLayer::Update(float dt) {
+  m_AnimationTime += dt;
+  if (m_ViewportHoveredLastFrame) {
+    m_Camera.ApplyScroll(ImGui::GetIO().MouseWheel);
+  }
   m_Camera.Update(dt, m_HoveredViewport);
   m_Renderer.PushFrameTime(dt * 1000.0f);
   m_AutosaveTimer += dt;
@@ -170,6 +196,13 @@ void EditorLayer::DrawInspector() {
     ImGui::End();
     return;
   }
+  if (m_Scene.Selection().size() > 1) {
+    ImGui::Text("%zu entities selected", m_Scene.Selection().size());
+    ImGui::Separator();
+    ImGui::TextUnformatted("Use the viewport gizmo (W/E/R) to move selection.");
+    ImGui::End();
+    return;
+  }
   const auto selected = *m_Scene.Selection().begin();
   auto* e = m_Scene.Find(selected);
   if (!e) {
@@ -201,22 +234,139 @@ void EditorLayer::DrawViewport() {
     ImGui::End();
     return;
   }
-  m_HoveredViewport = ImGui::IsWindowHovered();
-  ImVec2 size = ImGui::GetContentRegionAvail();
-  if (size.x < 1.0f) size.x = 1.0f;
-  if (size.y < 1.0f) size.y = 1.0f;
-  m_Camera.SetViewportSize(size.x, size.y);
-  m_Renderer.Resize(static_cast<int>(size.x), static_cast<int>(size.y));
-  m_Renderer.BeginFrame({0.08f, 0.09f, 0.11f, 1.0f});
-  m_Renderer.RenderScene(m_Scene, m_Camera, m_ViewMode, m_ShowBounds);
-  m_Renderer.EndFrame();
-  ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(m_Renderer.ColorAttachment())), size, ImVec2(0, 1), ImVec2(1, 0));
-  ImGui::Text("Viewport active. Controls: RMB orbit, MMB pan");
+  const ImGuiHoveredFlags hoverFlags = ImGuiHoveredFlags_AllowWhenBlockedByActiveItem;
+  m_HoveredViewport = ImGui::IsWindowHovered(hoverFlags);
+
+  ImGui::TextUnformatted("RMB orbit · MMB pan · Scroll / +/- zoom · W/E/R gizmo · click pick (Shift add, Ctrl toggle)");
   ImGui::Checkbox("Grid Snap", &m_Snap);
   ImGui::SameLine();
   ImGui::DragFloat("Step", &m_SnapStep, 0.01f, 0.01f, 10.0f);
   ImGui::SameLine();
   ImGui::Checkbox("Local Space", &m_LocalSpace);
+
+  ImVec2 size = ImGui::GetContentRegionAvail();
+  if (size.x < 1.0f) size.x = 1.0f;
+  if (size.y < 1.0f) size.y = 1.0f;
+
+  m_Camera.SetViewportSize(size.x, size.y);
+  m_Renderer.Resize(static_cast<int>(size.x), static_cast<int>(size.y));
+  m_Renderer.BeginFrame({0.08f, 0.09f, 0.11f, 1.0f});
+  const auto& sel = m_Scene.Selection();
+  m_Renderer.RenderScene(m_Scene, m_Camera, m_ViewMode, &sel, m_Settings.selectionHighlight, m_AnimationTime);
+  m_Renderer.RenderOriginAxes(m_Camera, m_Settings.axisLength);
+  m_Renderer.EndFrame();
+
+  ImGui::Image(static_cast<ImTextureID>(static_cast<intptr_t>(m_Renderer.ColorAttachment())), size, ImVec2(0, 1),
+               ImVec2(1, 0));
+
+  const ImVec2 imgMin = ImGui::GetItemRectMin();
+  const bool imgHovered = ImGui::IsItemHovered(hoverFlags);
+
+  ImGuizmo::SetDrawlist(ImGui::GetWindowDrawList());
+  ImGuizmo::SetOrthographic(false);
+  ImGuizmo::SetRect(imgMin.x, imgMin.y, size.x, size.y);
+
+  glm::mat4 view = m_Camera.View();
+  glm::mat4 proj = m_Camera.Projection();
+  float viewF[16];
+  float projF[16];
+  std::memcpy(viewF, glm::value_ptr(view), sizeof(viewF));
+  std::memcpy(projF, glm::value_ptr(proj), sizeof(projF));
+
+  if (ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows)) {
+    if (ImGui::IsKeyPressed(ImGuiKey_W)) m_GizmoOperation = static_cast<int>(ImGuizmo::TRANSLATE);
+    if (ImGui::IsKeyPressed(ImGuiKey_E)) m_GizmoOperation = static_cast<int>(ImGuizmo::ROTATE);
+    if (ImGui::IsKeyPressed(ImGuiKey_R)) m_GizmoOperation = static_cast<int>(ImGuizmo::SCALE);
+  }
+
+  const ImGuizmo::MODE gizmoMode = m_LocalSpace ? ImGuizmo::LOCAL : ImGuizmo::WORLD;
+  float snapData[3] = {m_SnapStep, m_SnapStep, m_SnapStep};
+  const ImGuizmo::OPERATION op = static_cast<ImGuizmo::OPERATION>(m_GizmoOperation);
+  const float* snapPtr =
+    (m_Snap && op == ImGuizmo::TRANSLATE) ? snapData : nullptr;
+
+  if (!sel.empty()) {
+    bool anyLocked = false;
+    for (const auto id : sel) {
+      const auto* ent = m_Scene.Find(id);
+      if (ent && ent->locked) anyLocked = true;
+    }
+
+    if (!anyLocked) {
+      if (sel.size() == 1) {
+        auto* e = m_Scene.Find(*sel.begin());
+        if (e) {
+          glm::mat4 M = EntityWorldMatrix(*e);
+          float mat[16];
+          std::memcpy(mat, glm::value_ptr(M), sizeof(mat));
+          ImGuizmo::Manipulate(viewF, projF, op, gizmoMode, mat, nullptr, snapPtr);
+          if (ImGuizmo::IsUsing()) {
+            float t[3];
+            float r[3];
+            float s[3];
+            ImGuizmo::DecomposeMatrixToComponents(mat, t, r, s);
+            e->transform.position = glm::vec3(t[0], t[1], t[2]);
+            e->transform.rotation =
+              glm::vec3(glm::radians(r[0]), glm::radians(r[1]), glm::radians(r[2]));
+            e->transform.scale = glm::vec3(s[0], s[1], s[2]);
+          }
+        }
+      } else {
+        const glm::vec3 c = SelectionCentroid(m_Scene, sel);
+        glm::mat4 M = glm::translate(glm::mat4(1.0f), c);
+        float mat[16];
+        std::memcpy(mat, glm::value_ptr(M), sizeof(mat));
+        ImGuizmo::Manipulate(viewF, projF, ImGuizmo::TRANSLATE, ImGuizmo::WORLD, mat, nullptr, snapPtr);
+        const bool usingGizmo = ImGuizmo::IsUsing();
+        if (usingGizmo && !m_MultiGizmoWasUsing) {
+          m_MultiPivotStart = c;
+          m_MultiDragStart.clear();
+          for (const auto id : sel) {
+            if (const auto* ent = m_Scene.Find(id)) m_MultiDragStart[id] = ent->transform.position;
+          }
+        }
+        if (usingGizmo) {
+          const glm::mat4 M2 = glm::make_mat4(mat);
+          const glm::vec3 newC = glm::vec3(M2[3]);
+          const glm::vec3 delta = newC - m_MultiPivotStart;
+          for (const auto id : sel) {
+            auto it = m_MultiDragStart.find(id);
+            auto* ent = m_Scene.Find(id);
+            if (ent && !ent->locked && it != m_MultiDragStart.end()) {
+              ent->transform.position = it->second + delta;
+            }
+          }
+        }
+        m_MultiGizmoWasUsing = usingGizmo;
+      }
+    }
+  } else {
+    m_MultiGizmoWasUsing = false;
+  }
+
+  if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && imgHovered && !ImGuizmo::IsOver() &&
+      !ImGuizmo::IsUsing()) {
+    const ImVec2 mp = ImGui::GetMousePos();
+    const float lx = mp.x - imgMin.x;
+    const float ly = mp.y - imgMin.y;
+    const Ray ray = ScreenToRay(lx, ly, size.x, size.y, m_Camera);
+    const scene::EntityId hit = PickEntity(ray, m_Scene);
+    const ImGuiIO& io = ImGui::GetIO();
+    if (hit != 0) {
+      if (io.KeyShift) {
+        m_Scene.AddSelection(hit);
+      } else if (io.KeyCtrl) {
+        m_Scene.ToggleSelection(hit);
+      } else {
+        m_Scene.SelectSingle(hit);
+      }
+    } else if (!io.KeyShift && !io.KeyCtrl) {
+      m_Scene.ClearSelection();
+    }
+  }
+
+  m_ViewportHoveredLastFrame = m_HoveredViewport || imgHovered;
+
   ImGui::End();
 }
 
@@ -286,6 +436,9 @@ void EditorLayer::DrawNotifications() {
 
 void EditorLayer::HandleShortcuts() {
   const ImGuiIO& io = ImGui::GetIO();
+  if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    m_Scene.ClearSelection();
+  }
   if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_S)) SaveSceneAs(m_CurrentScenePath);
   if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D)) {
     for (auto id : m_Scene.Selection()) m_Scene.DuplicateEntity(id);

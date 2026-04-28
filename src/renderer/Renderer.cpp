@@ -1,8 +1,10 @@
+#include <glad/glad.h>
+
 #include "renderer/Renderer.h"
 
 #include "core/Log.h"
 
-#include <glad/glad.h>
+#include <cmath>
 #include <glm/gtc/matrix_transform.hpp>
 
 namespace helios::renderer {
@@ -65,6 +67,21 @@ bool Renderer::Init() {
   glBufferData(GL_ARRAY_BUFFER, sizeof(cube), cube, GL_STATIC_DRAW);
   glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
   glEnableVertexAttribArray(0);
+
+  static constexpr float axisLines[] = {
+    0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, // X
+    0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, // Y
+    0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, // Z
+  };
+  glGenVertexArrays(1, &m_AxisVao);
+  glGenBuffers(1, &m_AxisVbo);
+  glBindVertexArray(m_AxisVao);
+  glBindBuffer(GL_ARRAY_BUFFER, m_AxisVbo);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(axisLines), axisLines, GL_STATIC_DRAW);
+  glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), nullptr);
+  glEnableVertexAttribArray(0);
+  glBindVertexArray(0);
+
   glEnable(GL_DEPTH_TEST);
   Resize(m_Width, m_Height);
   return true;
@@ -74,6 +91,8 @@ void Renderer::Shutdown() {
   if (m_DepthStencilRbo) glDeleteRenderbuffers(1, &m_DepthStencilRbo);
   if (m_ColorAttachment) glDeleteTextures(1, &m_ColorAttachment);
   if (m_Framebuffer) glDeleteFramebuffers(1, &m_Framebuffer);
+  if (m_AxisVbo) glDeleteBuffers(1, &m_AxisVbo);
+  if (m_AxisVao) glDeleteVertexArrays(1, &m_AxisVao);
   if (m_Vbo) glDeleteBuffers(1, &m_Vbo);
   if (m_Vao) glDeleteVertexArrays(1, &m_Vao);
   if (m_Program) glDeleteProgram(m_Program);
@@ -117,16 +136,21 @@ void Renderer::BeginFrame(const glm::vec4& clearColor) {
   m_Stats.drawCalls = 0;
 }
 
-void Renderer::RenderScene(const scene::Scene& scene, const EditorCamera& camera, ViewMode mode, bool /*showBounds*/) {
+void Renderer::RenderScene(const scene::Scene& scene, const EditorCamera& camera, ViewMode mode,
+                           const std::unordered_set<scene::EntityId>* selection,
+                           float selectionHighlightMul, float selectionPulseT) {
   glUseProgram(m_Program);
   glBindVertexArray(m_Vao);
   glPolygonMode(GL_FRONT_AND_BACK, mode == ViewMode::Wireframe ? GL_LINE : GL_FILL);
   const glm::mat4 vp = camera.Projection() * camera.View();
   const int mvpLoc = glGetUniformLocation(m_Program, "uMVP");
   const int colorLoc = glGetUniformLocation(m_Program, "uColor");
+  const float pulse = 0.88f + 0.12f * std::sin(selectionPulseT * 6.2831853f);
 
   for (const auto& e : scene.Entities()) {
     if (!e.enabled || e.hidden) continue;
+    if (e.primitive == scene::PrimitiveType::Empty) continue;
+
     glm::mat4 model(1.0f);
     model = glm::translate(model, e.transform.position);
     model = glm::rotate(model, e.transform.rotation.x, glm::vec3(1, 0, 0));
@@ -135,12 +159,48 @@ void Renderer::RenderScene(const scene::Scene& scene, const EditorCamera& camera
     model = glm::scale(model, e.transform.scale);
     const glm::mat4 mvp = vp * model;
     glUniformMatrix4fv(mvpLoc, 1, GL_FALSE, &mvp[0][0]);
-    glUniform4f(colorLoc, e.material.color.r, e.material.color.g, e.material.color.b, e.material.color.a);
+
+    glm::vec4 c = e.material.color;
+    if (selection && selection->contains(e.id)) {
+      const float m = selectionHighlightMul * pulse;
+      c.r = glm::min(c.r * m, 1.0f);
+      c.g = glm::min(c.g * m, 1.0f);
+      c.b = glm::min(c.b * m, 1.0f);
+    }
+    glUniform4f(colorLoc, c.r, c.g, c.b, c.a);
     glDrawArrays(GL_TRIANGLES, 0, 36);
     ++m_Stats.objectCount;
     m_Stats.triangleCount += 12;
     ++m_Stats.drawCalls;
   }
+}
+
+void Renderer::RenderOriginAxes(const EditorCamera& camera, float axisLength) {
+  axisLength = glm::max(0.05f, axisLength);
+  glUseProgram(m_Program);
+  glBindVertexArray(m_AxisVao);
+  glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+  const glm::mat4 vp = camera.Projection() * camera.View();
+  const glm::mat4 model = glm::scale(glm::translate(glm::mat4(1.0f), glm::vec3(0.0f)), glm::vec3(axisLength));
+  const glm::mat4 mvp = vp * model;
+  const int mvpLoc = glGetUniformLocation(m_Program, "uMVP");
+  const int colorLoc = glGetUniformLocation(m_Program, "uColor");
+  glUniformMatrix4fv(mvpLoc, 1, GL_FALSE, &mvp[0][0]);
+
+#if defined(__APPLE__)
+  glLineWidth(1.5f);
+#else
+  glLineWidth(2.0f);
+#endif
+
+  glUniform4f(colorLoc, 0.95f, 0.25f, 0.22f, 1.0f);
+  glDrawArrays(GL_LINES, 0, 2);
+  glUniform4f(colorLoc, 0.35f, 0.92f, 0.35f, 1.0f);
+  glDrawArrays(GL_LINES, 2, 2);
+  glUniform4f(colorLoc, 0.28f, 0.55f, 1.0f, 1.0f);
+  glDrawArrays(GL_LINES, 4, 2);
+
+  ++m_Stats.drawCalls;
 }
 
 void Renderer::EndFrame() {

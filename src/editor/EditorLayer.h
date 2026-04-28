@@ -1,11 +1,15 @@
 #pragma once
 
+#include "editor/EditorSettings.h"
 #include "renderer/Camera.h"
 #include "renderer/Renderer.h"
 #include "scene/Scene.h"
 
 #include <deque>
+#include <glm/glm.hpp>
 #include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace helios::editor {
@@ -27,6 +31,7 @@ private:
     std::string jsonPath;
   };
 
+  void SyncCameraFromSettings();
   void DrawDockspace();
   void DrawMenuBar();
   void DrawHierarchy();
@@ -44,6 +49,7 @@ private:
   void Redo();
   void EnsureBootstrapScene();
 
+  EditorSettings m_Settings{};
   scene::Scene m_Scene;
   renderer::Renderer m_Renderer;
   renderer::EditorCamera m_Camera;
@@ -64,5 +70,16 @@ private:
   std::vector<Snapshot> m_Undo;
   std::vector<Snapshot> m_Redo;
   std::deque<Notification> m_Notifications;
+
+  /// Last frame viewport had focus for scroll zoom (updated in Render).
+  bool m_ViewportHoveredLastFrame = false;
+
+  float m_AnimationTime = 0.0f;
+
+  /// ImGuizmo::OPERATION as int (see ImGuizmo.h).
+  int m_GizmoOperation = 0;
+  bool m_MultiGizmoWasUsing = false;
+  glm::vec3 m_MultiPivotStart{};
+  std::unordered_map<scene::EntityId, glm::vec3> m_MultiDragStart{};
 };
 } // namespace helios::editor

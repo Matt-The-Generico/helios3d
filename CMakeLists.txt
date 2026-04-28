@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
-project(Helios3DEngine VERSION 0.1.0 LANGUAGES CXX)
+project(Helios3DEngine VERSION 0.1.1 LANGUAGES CXX)
 
 # CMake 4 removes compatibility with very old policy versions used by some
 # fetched third-party dependencies. Keep policy minimum explicit so configure
@@ -98,6 +98,7 @@ add_executable(Helios3DEngine
   src/scene/Scene.cpp
   src/scene/SceneSerializer.cpp
   src/editor/EditorLayer.cpp
+  src/editor/Picking.cpp
 )
 
 target_include_directories(Helios3DEngine PRIVATE
