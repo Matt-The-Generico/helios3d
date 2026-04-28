@@ -20,7 +20,11 @@ Helios3D Engine is a modular C++ 3D editor foundation with a clean separation be
 `assets/shaders` - shader files  
 `assets/scenes` - scene JSON files and autosave/recent data
 
-## Build (Windows)
+## Download (Windows)
+
+Visit [https://helios3d.netlify.app] to download the software and learn more about it.
+
+## Build For Devs (Windows)
 
 ### Prerequisites
 
